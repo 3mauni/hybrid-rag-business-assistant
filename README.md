@@ -111,7 +111,7 @@ ChromaDB      BM25
 
 ## Main Hybrid RAG Dashboard
 
-![Main Dashboard](screenshots/semantic-search-interface.png)
+![Main Dashboard](screenshots/business-process-improvement.png)
 
 ---
 
