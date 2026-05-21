@@ -1,0 +1,142 @@
+import chromadb
+import ollama
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+
+DATA_PATH = "data/business_policy.txt"
+CHROMA_PATH = "chroma_db"
+COLLECTION_NAME = "business_docs"
+
+
+def load_document(path):
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
+
+
+def chunk_text(text, chunk_size=500, overlap=100):
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        start += chunk_size - overlap
+
+    return chunks
+
+
+def build_index():
+    text = load_document(DATA_PATH)
+    chunks = chunk_text(text)
+
+    client = chromadb.PersistentClient(path=CHROMA_PATH)
+
+    try:
+        client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+
+    collection = client.create_collection(COLLECTION_NAME)
+
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    embeddings = embedding_model.encode(chunks).tolist()
+
+    for i, chunk in enumerate(chunks):
+        collection.add(
+            ids=[str(i)],
+            documents=[chunk],
+            embeddings=[embeddings[i]]
+        )
+
+    return len(chunks)
+
+
+def semantic_search(query, top_k=3):
+    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = client.get_collection(COLLECTION_NAME)
+
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    query_embedding = embedding_model.encode([query]).tolist()[0]
+
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k
+    )
+
+    return results["documents"][0]
+
+
+def keyword_search(query, top_k=3):
+    text = load_document(DATA_PATH)
+    chunks = chunk_text(text)
+
+    tokenized_chunks = [chunk.lower().split() for chunk in chunks]
+    bm25 = BM25Okapi(tokenized_chunks)
+
+    tokenized_query = query.lower().split()
+    scores = bm25.get_scores(tokenized_query)
+
+    ranked_results = sorted(
+        zip(chunks, scores),
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    return [chunk for chunk, score in ranked_results[:top_k]]
+
+
+def hybrid_search(query):
+    semantic_results = semantic_search(query)
+    keyword_results = keyword_search(query)
+
+    combined_results = []
+    seen = set()
+
+    for result in semantic_results + keyword_results:
+        if result not in seen:
+            combined_results.append(result)
+            seen.add(result)
+
+    return combined_results[:5]
+
+
+def generate_answer(query, context):
+    prompt = f"""
+You are a professional business operations assistant.
+
+Answer the question using only the context below.
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer professionally.
+"""
+
+    response = ollama.chat(
+        model="llama3.2:3b",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    return response["message"]["content"]
+
+
+def answer_question(query):
+    retrieved_chunks = hybrid_search(query)
+
+    context = "\n\n".join(retrieved_chunks)
+
+    answer = generate_answer(query, context)
+
+    return answer, retrieved_chunks
